@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isUser(userId) {
+      return request.auth.uid == userId;
+    }
+
+    function isDriver() {
+      return exists(/databases/$(database)/documents/motoristas/$(request.auth.uid));
+    }
+
+    // Usuários: Apenas o próprio usuário pode ler e escrever seus dados.
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow write: if isUser(userId);
+    }
+    
+    // Motoristas: Perfil público, mas só o próprio motorista pode editar.
+    match /motoristas/{motoristaId} {
+      allow read: if isSignedIn();
+      allow create, update: if isUser(motoristaId);
+
+      // Avaliações: Qualquer usuário logado pode ler as avaliações.
+      match /avaliacoes/{avaliacaoId} {
+        allow read: if isSignedIn();
+      }
+    }
+
+    // Alunos: Apenas o próprio aluno ou o motorista associado podem ler. Só o aluno pode editar,
+    // exceto quando o motorista atualiza o vínculo (campo motoristaId).
+    match /alunos/{alunoId} {
+      function driverOwnsAluno() {
+        return isDriver() && (
+          alunoId in get(/databases/$(database)/documents/motoristas/$(request.auth.uid)).data.alunosIds ||
+          (resource != null && resource.data.motoristaId == request.auth.uid) ||
+          (request.resource != null && request.resource.data.motoristaId == request.auth.uid)
+        );
+      }
+
+      allow read, list: if isUser(alunoId) || driverOwnsAluno();
+      allow create: if isUser(alunoId);
+      allow update: if isUser(alunoId) ||
+        (driverOwnsAluno() &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(['motoristaId']));
+    }
+
+    match /contratos/{contratoId} {
+      function isParticipant() {
+        return isSignedIn() &&
+          ((resource.data.motoristaId == request.auth.uid) ||
+           (resource.data.alunoId == request.auth.uid));
+      }
+      function isParticipantCreate() {
+        return isSignedIn() &&
+          ((request.resource.data.motoristaId == request.auth.uid) ||
+           (request.resource.data.alunoId == request.auth.uid));
+      }
+
+      allow read: if isParticipant();
+      allow create: if isParticipantCreate();
+      allow update, delete: if isParticipant();
+    }
+    
+    // Vans: Qualquer um pode ver, mas só o motorista proprietário pode gerenciar.
+    match /vans/{vanId} {
+        allow read: if isSignedIn();
+        allow create: if isDriver() && request.resource.data.motoristaId == request.auth.uid;
+        allow update, delete: if isDriver() && resource.data.motoristaId == request.auth.uid;
+    }
+
+    // Rotas: Apenas o motorista da rota e os alunos da rota podem ler. Só o motorista pode gerenciar.
+    match /rotas/{rotaId} {
+      allow read: if isSignedIn();
+      allow create: if isDriver() && request.resource.data.motoristaId == request.auth.uid;
+      allow update, delete: if isDriver() && resource.data.motoristaId == request.auth.uid;
+    }
+
+    // Chats: Regras para o sistema de mensagens.
+    match /chats/{chatId} {
+      allow read, write: if isSignedIn();
+
+      match /messages/{messageId} {
+        allow read, write: if isSignedIn();
+      }
+    }
+
+
+  }
+}
